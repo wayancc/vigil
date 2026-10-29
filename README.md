@@ -43,7 +43,7 @@ Open `http://localhost:8080/admin`, create your account, and add a monitor. The 
 
 ### Shared hosting (cPanel, Plesk)
 
-1. Upload the folder and point the domain's document root at `public/`.
+1. Upload the folder and point the domain's document root at `public/`. If your host can't do that (Apache or LiteSpeed), point it at the Vigil folder itself: the included `.htaccess` serves everything from `public/` and hides the rest.
 2. Make sure `storage/` is writable by PHP.
 3. Open `/admin` and create your account.
 4. Add a cron job that runs every minute:

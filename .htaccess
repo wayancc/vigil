@@ -1,0 +1,14 @@
+# Only used when the web server's document root is this folder instead of public/,
+# e.g. shared hosting that can't point a (sub)domain at public/. Every request is
+# served from public/, so nothing else in this folder is reachable from the web.
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    Require all denied
+</IfModule>
