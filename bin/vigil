@@ -1,0 +1,134 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+require dirname(__DIR__) . '/src/bootstrap.php';
+
+use Vigil\App;
+use Vigil\Format;
+use Vigil\Monitor\Runner;
+use Vigil\Notify\Alert;
+
+$args = array_slice($argv, 1);
+$command = array_shift($args) ?? 'help';
+$opts = [];
+foreach ($args as $arg) {
+    if (preg_match('/^--([a-z-]+)(?:=(.*))?$/', $arg, $m)) {
+        $opts[$m[1]] = $m[2] ?? true;
+    }
+}
+
+$green = fn (string $s) => "\033[32m{$s}\033[0m";
+$red = fn (string $s) => "\033[31m{$s}\033[0m";
+$dim = fn (string $s) => "\033[2m{$s}\033[0m";
+
+try {
+    $app = App::boot(VIGIL_ROOT);
+
+    switch ($command) {
+        case 'run':
+            // Called by cron every minute. Checks whatever is due and exits.
+            $r = $app->runner->runDue(all: isset($opts['all']));
+            if (!isset($opts['quiet'])) {
+                echo $r['skipped'] ? "Another run is in progress\n" : "Checked {$r['checked']}: {$r['up']} up, {$r['down']} down\n";
+            }
+            break;
+
+        case 'work':
+            // Long-running worker for Docker / systemd: checks every few seconds, no cron needed.
+            $tick = max(5, (int) ($opts['tick'] ?? 10));
+            echo $green("Vigil worker started") . " (checking every {$tick}s, Ctrl+C to stop)\n";
+            $stop = false;
+            if (function_exists('pcntl_signal')) {
+                pcntl_async_signals(true);
+                pcntl_signal(SIGTERM, function () use (&$stop) { $stop = true; });
+                pcntl_signal(SIGINT, function () use (&$stop) { $stop = true; });
+            }
+            while (!$stop) {
+                $start = microtime(true);
+                try {
+                    $r = $app->runner->runDue();
+                    if ($r['checked'] > 0) {
+                        echo date('H:i:s') . " checked {$r['checked']}: {$r['up']} up, " . ($r['down'] ? $red("{$r['down']} down") : '0 down') . "\n";
+                    }
+                } catch (Throwable $e) {
+                    // One bad run (e.g. the database is busy) must not stop monitoring. Try again next tick.
+                    fwrite(STDERR, date('H:i:s') . ' ' . $red('run failed: ' . $e->getMessage()) . "\n");
+                }
+                $sleep = $tick - (microtime(true) - $start);
+                for ($i = 0; $i < $sleep * 10 && !$stop; $i++) {
+                    usleep(100_000);
+                }
+            }
+            echo "Worker stopped\n";
+            break;
+
+        case 'status':
+            foreach ($app->monitors->all() as $m) {
+                $state = $m['paused'] ? $dim('paused ') : match ($m['status']) {
+                    'up'    => $green('up     '),
+                    'down'  => $red('down   '),
+                    default => $dim('pending'),
+                };
+                printf("%s  %-28s %-8s %s\n", $state, mb_strimwidth($m['name'], 0, 28, '…'), Format::ms($m['last_response_ms'] !== null ? (int) $m['last_response_ms'] : null), $dim(Runner::target($m)));
+            }
+            $last = (int) $app->settings->get('last_run_at');
+            echo "\nLast run: " . ($last ? Format::ago($last) : 'never') . "\n";
+            break;
+
+        case 'test-alert':
+            $report = $app->notifier->notify(new Alert('test', 'Test alert from ' . $app->settings->get('site_name'), 'Sent from the command line.', time: time()));
+            if ($report === []) {
+                echo "No alert channels are enabled. Add one in the dashboard under Alerts.\n";
+            }
+            foreach ($report as $line) {
+                echo ($line['ok'] ? $green('sent  ') : $red('failed')) . "  {$line['channel']}" . ($line['error'] ? "  {$line['error']}" : '') . "\n";
+            }
+            break;
+
+        case 'user:password':
+            $email = $opts['email'] ?? null;
+            $user = $email ? $app->db->one('SELECT id FROM wyn_users WHERE email = ?', [strtolower((string) $email)]) : null;
+            if ($user === null) {
+                throw new RuntimeException('Usage: bin/vigil user:password --email=you@example.com (user must exist)');
+            }
+            echo 'New password: ';
+            system('stty -echo 2>/dev/null');
+            $password = trim((string) fgets(STDIN));
+            system('stty echo 2>/dev/null');
+            echo "\n";
+            if (strlen($password) < 10) {
+                throw new RuntimeException('Use at least 10 characters.');
+            }
+            $app->auth->changePassword((int) $user['id'], $password);
+            echo $green('Password changed') . "\n";
+            break;
+
+        case 'serve':
+            $port = (int) ($opts['port'] ?? 8000);
+            echo $green("Vigil: http://127.0.0.1:{$port}") . "  (dashboard at /admin, Ctrl+C to stop)\n";
+            echo $dim("Checks don't run by themselves here. In a second terminal run: php bin/vigil work") . "\n";
+            passthru(sprintf('%s -S 127.0.0.1:%d -t %s %s', escapeshellarg(PHP_BINARY), $port,
+                escapeshellarg(VIGIL_ROOT . '/public'), escapeshellarg(VIGIL_ROOT . '/public/index.php')));
+            break;
+
+        default:
+            echo <<<TXT
+            Vigil — uptime monitoring and status page
+
+            Usage: php bin/vigil <command>
+
+              run [--all]                   Run due checks once (put this in cron, every minute)
+              work [--tick=10]              Keep running and check continuously (Docker, systemd)
+              status                        Show every monitor's current state
+              test-alert                    Send a test alert to every enabled channel
+              user:password --email=…       Reset a user's password
+              serve [--port=8000]           Local dev server
+
+            TXT;
+    }
+} catch (Throwable $e) {
+    fwrite(STDERR, $red($e->getMessage()) . "\n");
+    exit(1);
+}

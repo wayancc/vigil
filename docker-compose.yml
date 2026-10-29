@@ -1,0 +1,13 @@
+services:
+  vigil:
+    build: .
+    ports:
+      - "8080:80"
+    volumes:
+      - vigil-data:/var/www/vigil/storage
+    environment:
+      TZ: UTC
+    restart: unless-stopped
+
+volumes:
+  vigil-data:

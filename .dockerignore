@@ -1,0 +1,6 @@
+.git
+.github
+storage/*.sqlite*
+storage/*.lock
+config.php
+tests

@@ -1,0 +1,17 @@
+# systemd unit for the check worker (an alternative to cron).
+#   sudo cp deploy/vigil-worker.service /etc/systemd/system/
+#   sudo systemctl enable --now vigil-worker
+[Unit]
+Description=Vigil uptime checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=www-data
+WorkingDirectory=/var/www/vigil
+ExecStart=/usr/bin/php bin/vigil work
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

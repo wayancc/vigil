@@ -1,0 +1,18 @@
+{
+  "name": "wayancc/vigil",
+  "description": "Self-hosted uptime monitoring and status page. PHP 8.2 + SQLite, no dependencies.",
+  "type": "project",
+  "license": "AGPL-3.0-only",
+  "keywords": ["uptime", "monitoring", "status-page", "heartbeat", "cron-monitoring", "self-hosted", "sqlite"],
+  "require": {
+    "php": ">=8.2",
+    "ext-curl": "*",
+    "ext-openssl": "*",
+    "ext-pdo_sqlite": "*"
+  },
+  "bin": ["bin/vigil"],
+  "scripts": {
+    "test": "php tests/run.php",
+    "serve": "php bin/vigil serve"
+  }
+}
