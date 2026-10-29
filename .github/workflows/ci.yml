@@ -23,8 +23,74 @@ jobs:
       - name: Tests
         run: php tests/run.php
 
+  # Builds the image, runs it like `docker compose up` would, and proves that
+  # Apache serves the app and the background worker actually runs checks.
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t vigil .
+
+      - name: Build image
+        run: docker build -t vigil .
+
+      - name: Start container
+        run: docker run -d --name vigil -p 8080:80 -v vigil-data:/var/www/vigil/storage vigil
+
+      - name: Web server answers
+        run: |
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://localhost:8080/api/status.json && break; sleep 1; done
+          curl -fsS http://localhost:8080/api/status.json | jq -e '.services == []'
+          curl -fsS -o /dev/null http://localhost:8080/
+          curl -sS -o /dev/null -D - http://localhost:8080/admin | tee /dev/stderr | grep -iE '^location: .*/admin/setup' > /dev/null
+
+      - name: Worker started
+        run: docker logs vigil 2>&1 | grep -q 'Vigil worker started'
+
+      - name: Add monitors
+        run: |
+          token=$(docker exec -i -u www-data vigil php <<'PHP'
+          <?php
+          require 'src/bootstrap.php';
+          $app = Vigil\App::boot(VIGIL_ROOT);
+          $add = function (array $d) use ($app): array {
+              [$id, $errors] = $app->monitors->save($d + ['interval_sec' => 30, 'timeout_sec' => 5, 'confirmations' => 1, 'is_public' => 1]);
+              if ($errors) {
+                  fwrite(STDERR, json_encode($errors) . "\n");
+                  exit(1);
+              }
+              return $app->monitors->find($id);
+          };
+          $add(['name' => 'Self', 'type' => 'http', 'url' => 'http://127.0.0.1/api/status.json']);
+          $add(['name' => 'Port', 'type' => 'tcp', 'host' => '127.0.0.1', 'port' => 80]);
+          $add(['name' => 'Dead port', 'type' => 'tcp', 'host' => '127.0.0.1', 'port' => 1]);
+          echo $add(['name' => 'Backup', 'type' => 'heartbeat'])['heartbeat_token'];
+          PHP
+          )
+          test -n "$token"
+          echo "HB_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Heartbeat URL is recorded
+        run: curl -fsS "http://localhost:8080/hb/$HB_TOKEN" | grep -qx OK
+
+      - name: Worker runs the checks
+        run: |
+          expected='{"self":"up","port":"up","dead-port":"down","backup":"up"}'
+          for i in $(seq 1 45); do
+            states=$(curl -fsS http://localhost:8080/api/status.json | jq -c '[.services[] | {(.slug): .status}] | add')
+            echo "$states"
+            if jq -en --argjson a "$states" --argjson b "$expected" '$a == $b' > /dev/null; then
+              docker exec -u www-data vigil php bin/vigil status
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Checks didn't reach the expected states within 90s"
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs vigil
+
+      - name: Remove container
+        if: always()
+        run: docker rm -f vigil
